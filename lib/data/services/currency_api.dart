@@ -26,51 +26,65 @@ class CurrencyApi {
       return _usdQuotes;
     }
 
-    final uri = Uri.parse('https://api.exchangerate.host/live').replace(
-      queryParameters: <String, String>{
-        'access_key': apiKey,
-        'currencies': currencies.toSet().join(','),
-        'format': '1',
-      },
-    );
+    try {
+      final uri = Uri.parse('https://api.exchangerate.host/live').replace(
+        queryParameters: <String, String>{
+          'access_key': apiKey,
+          'currencies': currencies.toSet().join(','),
+          'format': '1',
+        },
+      );
 
-    final res = await http.get(uri);
-    final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final res = await http.get(uri);
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
 
-    if (body['success'] == false) {
-      final err = body['error'];
-      if (err is Map) {
-        final type = err['type']?.toString();
-        final code = err['code'];
+      if (body['success'] == false) {
+        final err = body['error'];
+        if (err is Map) {
+          final type = err['type']?.toString();
+          final code = err['code'];
 
-        // If the API says we've hit a temporary rate limit
-        if (type == 'rate_limit_reached' && _usdQuotes.isNotEmpty) {
-          _lastFetch = now;
-          return _usdQuotes;
+          // If the API says we've hit a rate limit, treat it like "offline":
+          // reuse whatever we already have in memory so the UI keeps working.
+          if (type == 'rate_limit_reached') {
+            if (_usdQuotes.isNotEmpty) {
+              _lastFetch = now;
+            }
+            return _usdQuotes;
+          }
+
+          throw Exception('$type ($code): ${err['info']}');
         }
-
-        throw Exception('$type ($code): ${err['info']}');
+        throw Exception('API error');
       }
-      throw Exception('API error');
-    }
 
-    final quotes = (body['quotes'] as Map?)?.cast<String, dynamic>();
-    if (quotes == null) throw Exception('Missing quotes in response');
+      final quotes = (body['quotes'] as Map?)?.cast<String, dynamic>();
+      if (quotes == null) throw Exception('Missing quotes in response');
 
-    final out = <String, double>{};
-    for (final entry in quotes.entries) {
-      final k = entry.key; // e.g. "USDINR"
-      final v = entry.value;
-      if (k.startsWith(_defaultSource) && v is num) {
-        final ccy = k.substring(_defaultSource.length); // "INR"
-        out[ccy] = v.toDouble();
+      final out = <String, double>{};
+      for (final entry in quotes.entries) {
+        final k = entry.key; // e.g. "USDINR"
+        final v = entry.value;
+        if (k.startsWith(_defaultSource) && v is num) {
+          final ccy = k.substring(_defaultSource.length); // "INR"
+          out[ccy] = v.toDouble();
+        }
       }
+
+      out[_defaultSource] = 1.0; // USD->USD is always 1
+
+      _usdQuotes = out;
+      _lastFetch = now;
+      return _usdQuotes;
+    } catch (_) {
+      // Any network / DNS / parsing error is treated as "offline".
+      // Prefer returning the last known quotes if we have any.
+      if (_usdQuotes.isNotEmpty) {
+        return _usdQuotes;
+      }
+      // No cached data yet – return an empty map so the caller can
+      // show a friendly "conversion not available" message.
+      return <String, double>{};
     }
-
-    out[_defaultSource] = 1.0; // USD->USD is always 1
-
-    _usdQuotes = out;
-    _lastFetch = now;
-    return _usdQuotes;
   }
 }
